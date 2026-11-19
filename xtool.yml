@@ -3,3 +3,4 @@ bundleID: com.vocabtrainer.talkloop
 product: Talkloop
 # Merged into the Info.plist xtool generates (the permission texts and background audio).
 infoPath: AppInfo.plist
+iconPath: Resources/Assets.xcassets/AppIcon.appiconset/Icon-1024.png

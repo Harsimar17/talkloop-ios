@@ -125,6 +125,7 @@ final class LiveCall {
         debug("live: model \(model)\(handle != nil ? " (resuming)" : "")")
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+        try? session.setPreferredIOBufferDuration(0.01) // small audio buffers: less delay both ways
         try session.setActive(true)
         // The loudspeaker, unless headphones are plugged in (voice chat otherwise may pick the earpiece).
         let headphonePorts: [AVAudioSession.Port] = [.headphones, .bluetoothHFP, .bluetoothA2DP, .bluetoothLE]
@@ -146,7 +147,7 @@ final class LiveCall {
         debug("live: mic format \(Int(rate)) Hz, \(inFormat.channelCount) ch; output \(Int(engine.outputNode.outputFormat(forBus: 0).sampleRate)) Hz")
         if rate <= 0 { throw AIError.message("the microphone gave no audio format") }
         let (stream, continuation) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .bufferingNewest(50))
-        input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { buffer, _ in
             guard let ch = buffer.floatChannelData?[0] else { return }
             continuation.yield(Array(UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength))))
         }
@@ -201,6 +202,8 @@ final class LiveCall {
     private var micChunks = 0
     private var micSent = 0
     private var micPeak = 0.0
+    private var lastSpeechAt: Date? // the learner's last loud chunk: the reply's delay is measured from it
+    private var replyTimed = true
 
     /// Ends the call: what was said so far is handed over first.
     func stop() {
@@ -296,11 +299,14 @@ final class LiveCall {
                 prerollChunks = []
             }
             quiet = 0
+            lastSpeechAt = Date()
+            replyTimed = false
             sendAudio(chunk)
         } else if talking {
             sendAudio(chunk)
             quiet += 1
             if quiet >= Self.hangover {
+                debug("live: you stopped talking (stream end sent)")
                 talking = false
                 send(["realtimeInput": ["audioStreamEnd": true]])
             }
@@ -329,6 +335,10 @@ final class LiveCall {
             for i in 0..<count { out[i] = Float(Int16(littleEndian: pcm[i])) / 32768 }
         }
         voiceChunks += 1
+        if !replyTimed, let spoke = lastSpeechAt {
+            replyTimed = true
+            debug("live: ⏱ reply voice started \(String(format: "%.1f", Date().timeIntervalSince(spoke))) s after your last word")
+        }
         voiceSeconds += Double(count) / format.sampleRate
         if voiceChunks == 1 || voiceChunks % 25 == 0 {
             debug("live: voice chunk \(voiceChunks) (\(String(format: "%.1f", voiceSeconds)) s so far); engine running \(engine.isRunning), player playing \(player.isPlaying)")
