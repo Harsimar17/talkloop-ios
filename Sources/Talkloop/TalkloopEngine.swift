@@ -1,6 +1,6 @@
 // Talkloop's conversation engine: speech in, an AI partner's turn out, spoken back with word
 // highlighting, corrections said again, and the learner's words and mistakes tracked.
-// Ported from frontend/src/talkloop/engine.js (the parts this app has; see README).
+// Ported from Deutsch-Vocab-Trainer-V2: frontend/src/talkloop/engine.js (the parts this app has; see README).
 import Foundation
 import SwiftUI
 

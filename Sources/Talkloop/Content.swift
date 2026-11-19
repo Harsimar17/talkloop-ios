@@ -1,5 +1,5 @@
 // What Talkloop talks about: scenes, partners, topics, themes, role cards, modes and tenses.
-// Ported from frontend/src/talkloop/engine.js and options.js; keep the two in step.
+// Ported from Deutsch-Vocab-Trainer-V2: frontend/src/talkloop/engine.js and options.js; keep the two in step.
 import Foundation
 
 // MARK: - Setup choices (options.js)

@@ -1,9 +1,26 @@
 # Talkloop for iPhone (SwiftUI)
 
 A native iOS version of **Talkloop**, the speaking practice from the web app
-(`frontend/src/talkloop/`). It talks to the same Spring Boot backend, so your
+([`frontend/src/talkloop/` in Deutsch-Vocab-Trainer-V2](https://github.com/Harsimar17/Deutsch-Vocab-Trainer-V2/tree/main/frontend/src/talkloop)). It talks to the same Spring Boot backend, so your
 account, saved AI keys, learnt words, mistake log and speaking schedule are the
 same as on the web.
+
+## Install it without a Mac (GitHub Actions + SideStore)
+
+Every push builds an unsigned `Talkloop.ipa` on a GitHub Mac (`.github/workflows/build.yml`):
+open the latest run under **Actions**, download **Talkloop-ipa** and unzip it.
+
+1. On Windows, install iTunes (Microsoft Store) and [iloader](https://github.com/nab138/iloader/releases/latest)
+   (`iloader-windows-x64.msi`).
+2. Plug in the iPhone, sign in to iloader with your Apple ID and install **SideStore (Stable)**.
+3. On the iPhone: trust the developer (Settings → General → VPN & Device Management), turn on
+   Developer Mode (Settings → Privacy & Security), open SideStore and sign in with the same Apple ID,
+   then install **LocalDevVPN** from the App Store and connect it.
+4. Copy `Talkloop.ipa` to the iPhone (Files), then in SideStore: **My Apps → +** → pick it.
+5. With a free Apple ID apps expire after 7 days: in SideStore, with LocalDevVPN on, tap
+   **Refresh All** every few days.
+
+In a call, the 🐞 button shows a debug log of the live voice call (connection, audio route, mic and voice).
 
 ## Build it
 
@@ -11,7 +28,7 @@ You need a Mac with Xcode 15 or later (iOS 17 SDK).
 
 ```bash
 brew install xcodegen
-cd ios/Talkloop
+cd talkloop-ios
 xcodegen
 open Talkloop.xcodeproj
 ```
@@ -42,7 +59,7 @@ There is no simulator. On Windows it runs inside WSL.
 7. Build and install:
 
    ```bash
-   cd /mnt/g/Deutsch-Vocab-Trainer-V2/ios/Talkloop
+   cd /mnt/g/talkloop-ios
    xtool dev
    ```
 

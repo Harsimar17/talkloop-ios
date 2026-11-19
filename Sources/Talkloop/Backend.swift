@@ -1,4 +1,4 @@
-// The Vocab Trainer's API (the Spring Boot backend in this repo). The app logs in with the
+// The Vocab Trainer's API (the Spring Boot backend in Harsimar17/Deutsch-Vocab-Trainer-V2). The app logs in with the
 // trainer's account, swaps that login for a Talkloop link, and uses the link for everything
 // else: the saved AI keys, the learnt words, and the synced mistake log and speaking schedule.
 import Foundation
