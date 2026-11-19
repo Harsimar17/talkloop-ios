@@ -142,15 +142,9 @@ final class LiveCall {
         engine.mainMixerNode.outputVolume = 1
         player.volume = 1
 
-        let inFormat = input.outputFormat(forBus: 0)
-        let rate = inFormat.sampleRate
-        debug("live: mic format \(Int(rate)) Hz, \(inFormat.channelCount) ch; output \(Int(engine.outputNode.outputFormat(forBus: 0).sampleRate)) Hz")
-        if rate <= 0 { throw AIError.message("the microphone gave no audio format") }
-        let (stream, continuation) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .bufferingNewest(50))
-        input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { buffer, _ in
-            guard let ch = buffer.floatChannelData?[0] else { return }
-            continuation.yield(Array(UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength))))
-        }
+        let (stream, continuation) = AsyncStream<(samples: [Float], rate: Double)>.makeStream(bufferingPolicy: .bufferingNewest(50))
+        micContinuation = continuation
+        guard installMicTap() else { throw AIError.message("the microphone gave no audio format") }
         engine.prepare()
         try engine.start()
         player.play()
@@ -164,8 +158,20 @@ final class LiveCall {
             Task { @MainActor in self?.restartAudio("audio configuration changed") }
         }
         micTask = Task { [weak self] in
-            for await samples in stream {
-                self?.micSamples(samples, rate: rate)
+            for await block in stream {
+                self?.micSamples(block.samples, rate: block.rate)
+            }
+        }
+        // Every 5 s: is the audio still running, and is the mic still delivering?
+        heartbeat = Task { [weak self] in
+            var lastChunks = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, !self.ending else { return }
+                let fresh = self.micChunks - lastChunks
+                lastChunks = self.micChunks
+                debug("live: ♥ engine \(self.engine.isRunning ? "running" : "STOPPED"), player \(self.player.isPlaying ? "playing" : "STOPPED"), mic chunks in last 5 s: \(fresh), voice chunks so far: \(self.voiceChunks), partner speaking \(self.isSpeaking), muted \(self.muted)")
+                if fresh == 0 && self.ready && !self.muted { self.restartAudio("the mic delivered nothing for 5 s") }
             }
         }
 
@@ -193,6 +199,27 @@ final class LiveCall {
         Task { [weak self] in await self?.receiveLoop(task) }
     }
 
+    private var micContinuation: AsyncStream<(samples: [Float], rate: Double)>.Continuation?
+    private var heartbeat: Task<Void, Never>?
+    private var restarts: [Date] = []
+
+    /// Taps the mic in its current format (it changes with the route: built-in mic, Bluetooth headset…).
+    @discardableResult
+    private func installMicTap() -> Bool {
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        let format = input.outputFormat(forBus: 0)
+        debug("live: mic format \(Int(format.sampleRate)) Hz, \(format.channelCount) ch; output \(Int(engine.outputNode.outputFormat(forBus: 0).sampleRate)) Hz")
+        guard format.sampleRate > 0, format.channelCount > 0, let continuation = micContinuation else { return false }
+        let rate = format.sampleRate
+        micPos = 0
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            guard let ch = buffer.floatChannelData?[0] else { return }
+            continuation.yield((Array(UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength))), rate))
+        }
+        return true
+    }
+
     private var routeObserver: NSObjectProtocol?
     private var configObserver: NSObjectProtocol?
     private var expectedEnd = Date.distantPast // when the voice scheduled so far should have finished
@@ -212,6 +239,8 @@ final class LiveCall {
         debug("live: stopped (received \(received) messages, played \(voiceChunks) voice chunks = \(String(format: "%.1f", voiceSeconds)) s, mic sent \(micSent) of \(micChunks) chunks)")
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+        heartbeat?.cancel()
+        micContinuation?.finish()
         flushLearner()
         flushReply()
         stopVoice()
@@ -369,18 +398,30 @@ final class LiveCall {
         }
     }
 
-    /// Starts the engine and the player again after iOS stopped them. Voice scheduled before is lost.
+    /// Rebuilds the audio path after iOS changed it (another route such as a Bluetooth headset,
+    /// or voice processing turning on): the connections and the mic tap are made again in the
+    /// new formats, as Apple asks after a configuration change. Voice scheduled before is lost.
     private func restartAudio(_ why: String) {
-        guard !ending else { return }
+        guard !ending, let format = playFormat else { return }
+        // Never in a loop: at most 5 rebuilds in 10 s.
+        restarts = restarts.filter { $0.timeIntervalSinceNow > -10 } + [Date()]
+        guard restarts.count <= 5 else {
+            debug("live: \(why): too many audio restarts, leaving it")
+            return
+        }
         generation += 1
         pending = 0
         expectedEnd = .distantPast
         setSpeaking(false)
         do {
-            if !engine.isRunning {
-                engine.prepare()
-                try engine.start()
-            }
+            if engine.isRunning { engine.stop() }
+            player.stop()
+            engine.disconnectNodeOutput(player)
+            engine.connect(player, to: engine.mainMixerNode, format: format)
+            engine.connect(engine.mainMixerNode, to: engine.outputNode, format: nil)
+            installMicTap()
+            engine.prepare()
+            try engine.start()
             player.play()
             DebugLog.shared.logRoute("live: \(why): restarted (engine running \(engine.isRunning), player \(player.isPlaying))")
         } catch {
