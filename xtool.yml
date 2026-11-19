@@ -1,0 +1,5 @@
+version: 1
+bundleID: com.vocabtrainer.talkloop
+product: Talkloop
+# Merged into the Info.plist xtool generates (the permission texts and background audio).
+infoPath: AppInfo.plist
