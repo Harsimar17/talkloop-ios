@@ -33,7 +33,9 @@ final class LiveCall {
     private static let preroll = 3 // chunks sent from just before speech starts
     private static let hangover = 15 // chunks still sent after the last loud one (a short thinking pause)
     private static let minLevel = 0.006 // RMS below which nothing counts as speech, however quiet the room
-    private static let bargeInLevel = 0.04 // the same while Gemini speaks: only a clearly raised voice cuts in
+    // The same while Gemini speaks: only a clearly raised voice cuts in. Lower than the web (0.04):
+    // with the phone's voice processing the mic is quieter (a normal voice peaked at about 0.012).
+    private static let bargeInLevel = 0.02
     private static let voice = "Puck"
 
     var events = Events()
@@ -155,6 +157,11 @@ final class LiveCall {
         routeObserver = NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { _ in
             Task { @MainActor in DebugLog.shared.logRoute("live: route changed") }
         }
+        // iOS stops the engine whenever the audio route or format changes (turning on voice
+        // processing does that right after start): start it, and the player, again.
+        configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.restartAudio("audio configuration changed") }
+        }
         micTask = Task { [weak self] in
             for await samples in stream {
                 self?.micSamples(samples, rate: rate)
@@ -186,6 +193,8 @@ final class LiveCall {
     }
 
     private var routeObserver: NSObjectProtocol?
+    private var configObserver: NSObjectProtocol?
+    private var expectedEnd = Date.distantPast // when the voice scheduled so far should have finished
     private var received = 0
     private var voiceChunks = 0
     private var voiceSeconds = 0.0
@@ -199,6 +208,7 @@ final class LiveCall {
         ending = true
         debug("live: stopped (received \(received) messages, played \(voiceChunks) voice chunks = \(String(format: "%.1f", voiceSeconds)) s, mic sent \(micSent) of \(micChunks) chunks)")
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
         flushLearner()
         flushReply()
         stopVoice()
@@ -270,7 +280,7 @@ final class LiveCall {
         micChunks += 1
         micPeak = max(micPeak, rms)
         if micChunks % 50 == 0 { // every 5 s
-            debug("live: mic loudest \(String(format: "%.3f", micPeak)), noise floor \(String(format: "%.3f", floor ?? 0)), sent \(micSent)/\(micChunks) chunks")
+            debug("live: mic loudest \(String(format: "%.3f", micPeak)), noise floor \(String(format: "%.3f", floor ?? 0)), sent \(micSent)/\(micChunks) chunks, partner speaking \(isSpeaking)")
             micPeak = 0
         }
         // The noise floor follows quiet stretches quickly and loud ones slowly, and stays put
@@ -323,9 +333,7 @@ final class LiveCall {
         if voiceChunks == 1 || voiceChunks % 25 == 0 {
             debug("live: voice chunk \(voiceChunks) (\(String(format: "%.1f", voiceSeconds)) s so far); engine running \(engine.isRunning), player playing \(player.isPlaying)")
         }
-        if !engine.isRunning {
-            do { try engine.start(); debug("live: audio engine restarted") } catch { debug("live: audio engine won't start: \(error.localizedDescription)") }
-        }
+        if !engine.isRunning { restartAudio("audio engine had stopped") }
         pending += 1
         setSpeaking(true)
         let gen = generation
@@ -337,11 +345,43 @@ final class LiveCall {
             }
         }
         if !player.isPlaying { player.play() }
+        // A safety net: if the voice never reports that it finished (the engine stopped under it),
+        // stop counting it as speaking, or the mic would wait for a loud barge-in forever.
+        let duration = Double(count) / format.sampleRate
+        expectedEnd = max(expectedEnd, Date()).addingTimeInterval(duration)
+        let end = expectedEnd
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, end.timeIntervalSinceNow) + 1.5))
+            guard let self, self.generation == gen, self.isSpeaking, Date() >= self.expectedEnd.addingTimeInterval(1) else { return }
+            debug("live: voice didn't report finishing; treating it as done")
+            self.pending = 0
+            self.setSpeaking(false)
+        }
+    }
+
+    /// Starts the engine and the player again after iOS stopped them. Voice scheduled before is lost.
+    private func restartAudio(_ why: String) {
+        guard !ending else { return }
+        generation += 1
+        pending = 0
+        expectedEnd = .distantPast
+        setSpeaking(false)
+        do {
+            if !engine.isRunning {
+                engine.prepare()
+                try engine.start()
+            }
+            player.play()
+            DebugLog.shared.logRoute("live: \(why): restarted (engine running \(engine.isRunning), player \(player.isPlaying))")
+        } catch {
+            debug("live: \(why): audio engine won't start: \(error.localizedDescription)")
+        }
     }
 
     func stopVoice() {
         generation += 1
         pending = 0
+        expectedEnd = .distantPast
         player.stop()
         if engine.isRunning { player.play() } // ready for the next reply
         setSpeaking(false)
