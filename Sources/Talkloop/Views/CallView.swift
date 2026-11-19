@@ -4,6 +4,7 @@ import SwiftUI
 struct CallView: View {
     @EnvironmentObject private var engine: TalkloopEngine
     @FocusState private var typing: Bool
+    @State private var showLog = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,6 +14,7 @@ struct CallView: View {
             dock
         }
         .background(Color(.systemGroupedBackground))
+        .sheet(isPresented: $showLog) { DebugLogView() }
     }
 
     // MARK: Header
@@ -33,7 +35,10 @@ struct CallView: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
-                Text(engine.timerText).font(.caption.monospacedDigit())
+                HStack(spacing: 8) {
+                    Button("🐞") { showLog = true }.font(.caption).accessibilityLabel("Debug log")
+                    Text(engine.timerText).font(.caption.monospacedDigit())
+                }
                 Text(engine.paused ? "On hold"
                      : engine.isLiveCall ? (!engine.liveConnected ? "Connecting…" : engine.liveSpeaking ? "Speaking" : engine.micOn ? "Live" : "Muted")
                      : engine.busy ? "Thinking…" : engine.micOn ? "Listening" : "")

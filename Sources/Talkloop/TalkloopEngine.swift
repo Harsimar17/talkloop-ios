@@ -123,7 +123,9 @@ final class TalkloopEngine: ObservableObject {
     @Published private(set) var drill: DrillCard?
     @Published private(set) var sayThis: (label: String, text: String)?
     @Published private(set) var heard = ""
-    @Published var status = ""
+    @Published var status = "" {
+        didSet { if !status.isEmpty && status != oldValue { debug("status: \(status)") } }
+    }
     @Published private(set) var busy = false
     @Published private(set) var micOn = false
     @Published private(set) var paused = false
@@ -941,6 +943,7 @@ final class TalkloopEngine: ObservableObject {
 
     /// Connects the live call (or reconnects it, carrying on the same conversation).
     func startLive() async {
+        debug("live: starting (key \(keys.liveKey.isEmpty ? "missing" : "…" + keys.liveKey.suffix(4)))")
         guard live == nil, let s = settings, s.live else { return }
         liveReconnectPending = false
         let key = keys.liveKey
@@ -1010,6 +1013,7 @@ final class TalkloopEngine: ObservableObject {
     }
 
     private func liveClosed(before: Bool, resumed: Bool, goingAway: Bool, reason: String) {
+        debug("live: closed before ready=\(before) resumed=\(resumed) goingAway=\(goingAway) retries=\(liveRetries)")
         live = nil
         liveSpeaking = false
         micOn = false
@@ -1058,6 +1062,7 @@ final class TalkloopEngine: ObservableObject {
 
     /// What the learner said, as Gemini heard it: shown, kept and checked once their turn is over.
     private func liveLearnerTurn(_ said: String) {
+        debug("live: heard \(q(said))")
         guard settings != nil else { return }
         if status.hasPrefix("Mic muted") == false { status = "" }
         transcript.append(ChatMessage(kind: .learner, who: "You", text: said))
@@ -1090,6 +1095,7 @@ final class TalkloopEngine: ObservableObject {
     }
 
     private func liveFinishReply(_ text: String) {
+        if !text.isEmpty { debug("live: partner said \(q(String(text.prefix(60))))") }
         let id = liveReplyId
         liveReplyId = nil
         guard let s = settings else { return }

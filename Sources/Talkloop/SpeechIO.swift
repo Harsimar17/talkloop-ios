@@ -8,7 +8,7 @@ enum AudioSession {
     /// One session for the whole call: the mic and the voice take turns on it.
     static func activate() {
         let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .duckOthers])
+        try? s.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP, .duckOthers])
         try? s.setActive(true)
     }
 
@@ -161,6 +161,7 @@ final class Speaker: NSObject, AVSpeechSynthesizerDelegate {
         AudioSession.activate()
         let u = AVSpeechUtterance(string: text)
         u.voice = Self.voice(for: locale)
+        DebugLog.shared.logRoute("voice: \(u.voice?.name ?? "none") for \(locale)")
         u.rate = AVSpeechUtteranceDefaultSpeechRate * (slow ? 0.9 : 1)
         switch mood {
         case "amused", "surprised": u.pitchMultiplier = 1.1

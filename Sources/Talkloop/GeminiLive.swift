@@ -120,18 +120,29 @@ final class LiveCall {
 
     func start(key: String, model: String, systemPrompt: String, handle: String?) throws {
         // The mic and Gemini's voice share one engine with voice processing (echo cancellation).
+        debug("live: model \(model)\(handle != nil ? " (resuming)" : "")")
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try session.setActive(true)
+        // The loudspeaker, unless headphones are plugged in (voice chat otherwise may pick the earpiece).
+        let headphonePorts: [AVAudioSession.Port] = [.headphones, .bluetoothHFP, .bluetoothA2DP, .bluetoothLE]
+        let headphones = session.currentRoute.outputs.contains { headphonePorts.contains($0.portType) }
+        if !headphones { try? session.overrideOutputAudioPort(.speaker) }
         let input = engine.inputNode
         try input.setVoiceProcessingEnabled(true)
+        // Voice processing ducks playback by default, which can make Gemini's voice nearly silent.
+        input.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min)
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24000, channels: 1, interleaved: false)!
         playFormat = format
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: format)
+        engine.mainMixerNode.outputVolume = 1
+        player.volume = 1
 
         let inFormat = input.outputFormat(forBus: 0)
         let rate = inFormat.sampleRate
+        debug("live: mic format \(Int(rate)) Hz, \(inFormat.channelCount) ch; output \(Int(engine.outputNode.outputFormat(forBus: 0).sampleRate)) Hz")
+        if rate <= 0 { throw AIError.message("the microphone gave no audio format") }
         let (stream, continuation) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .bufferingNewest(50))
         input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { buffer, _ in
             guard let ch = buffer.floatChannelData?[0] else { return }
@@ -140,6 +151,10 @@ final class LiveCall {
         engine.prepare()
         try engine.start()
         player.play()
+        DebugLog.shared.logRoute("live: audio started (engine running \(engine.isRunning), player \(player.isPlaying))")
+        routeObserver = NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { _ in
+            Task { @MainActor in DebugLog.shared.logRoute("live: route changed") }
+        }
         micTask = Task { [weak self] in
             for await samples in stream {
                 self?.micSamples(samples, rate: rate)
@@ -166,13 +181,24 @@ final class LiveCall {
             "contextWindowCompression": ["slidingWindow": [String: Any]()],
         ]
         send(["setup": setup])
+        debug("live: connecting, setup sent")
         Task { [weak self] in await self?.receiveLoop(task) }
     }
+
+    private var routeObserver: NSObjectProtocol?
+    private var received = 0
+    private var voiceChunks = 0
+    private var voiceSeconds = 0.0
+    private var micChunks = 0
+    private var micSent = 0
+    private var micPeak = 0.0
 
     /// Ends the call: what was said so far is handed over first.
     func stop() {
         guard !ending else { return }
         ending = true
+        debug("live: stopped (received \(received) messages, played \(voiceChunks) voice chunks = \(String(format: "%.1f", voiceSeconds)) s, mic sent \(micSent) of \(micChunks) chunks)")
+        if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
         flushLearner()
         flushReply()
         stopVoice()
@@ -189,7 +215,10 @@ final class LiveCall {
     private func send(_ message: [String: Any]) {
         guard let socket, let data = try? JSONSerialization.data(withJSONObject: message),
               let text = String(data: data, encoding: .utf8) else { return }
-        socket.send(.string(text)) { _ in }
+        socket.send(.string(text)) { error in
+            guard let error else { return }
+            Task { @MainActor in debug("live: send failed: \(error.localizedDescription)") }
+        }
     }
 
     private func sendTurn(_ text: String) {
@@ -238,6 +267,12 @@ final class LiveCall {
         var sum = 0.0
         for v in chunk { sum += Double(v) * Double(v) }
         let rms = (sum / Double(chunk.count)).squareRoot() / 32768
+        micChunks += 1
+        micPeak = max(micPeak, rms)
+        if micChunks % 50 == 0 { // every 5 s
+            debug("live: mic loudest \(String(format: "%.3f", micPeak)), noise floor \(String(format: "%.3f", floor ?? 0)), sent \(micSent)/\(micChunks) chunks")
+            micPeak = 0
+        }
         // The noise floor follows quiet stretches quickly and loud ones slowly, and stays put
         // while Gemini speaks (what's left of its voice would raise it).
         if !isSpeaking {
@@ -266,6 +301,7 @@ final class LiveCall {
     }
 
     private func sendAudio(_ chunk: [Int16]) {
+        micSent += 1
         let data = chunk.withUnsafeBufferPointer { Data(buffer: $0) } // little-endian on iOS
         send(["realtimeInput": ["audio": ["data": data.base64EncodedString(), "mimeType": "audio/pcm;rate=16000"]]])
     }
@@ -281,6 +317,14 @@ final class LiveCall {
         data.withUnsafeBytes { raw in
             let pcm = raw.bindMemory(to: Int16.self)
             for i in 0..<count { out[i] = Float(Int16(littleEndian: pcm[i])) / 32768 }
+        }
+        voiceChunks += 1
+        voiceSeconds += Double(count) / format.sampleRate
+        if voiceChunks == 1 || voiceChunks % 25 == 0 {
+            debug("live: voice chunk \(voiceChunks) (\(String(format: "%.1f", voiceSeconds)) s so far); engine running \(engine.isRunning), player playing \(player.isPlaying)")
+        }
+        if !engine.isRunning {
+            do { try engine.start(); debug("live: audio engine restarted") } catch { debug("live: audio engine won't start: \(error.localizedDescription)") }
         }
         pending += 1
         setSpeaking(true)
@@ -321,12 +365,19 @@ final class LiveCall {
                 case let .data(d): data = d
                 @unknown default: data = nil
                 }
+                received += 1
                 if let data, let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                    if received <= 3 || json["error"] != nil {
+                        debug("live: message \(received): \(json.keys.sorted().joined(separator: ", "))\(json["error"].map { " \($0)" } ?? "")")
+                    }
                     handle(json)
+                } else {
+                    debug("live: message \(received) unreadable (\(data?.count ?? 0) bytes)")
                 }
             } catch {
                 guard socket === task, !ending else { return }
                 let reason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? error.localizedDescription
+                debug("live: connection closed (code \(task.closeCode.rawValue)): \(reason)")
                 let wasReady = ready
                 stop()
                 events.closed(!wasReady, resumed, goingAway, reason)
@@ -337,6 +388,7 @@ final class LiveCall {
 
     private func handle(_ msg: [String: Any]) {
         if msg["setupComplete"] != nil {
+            debug("live: setup complete, asking for the opening line")
             ready = true
             events.ready()
             return
