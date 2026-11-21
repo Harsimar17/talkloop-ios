@@ -86,6 +86,7 @@ by default).
 | `AI.swift` | Groq / OpenAI / Gemini / Cloudflare / Mistral with the same fallbacks, the turn schema, `normalizeTurn` |
 | `Learning.swift` | mistake log and its sync, speaking schedule (today's words) and its sync, say-it-again matching, LanguageTool check, streak |
 | `SpeechIO.swift` | speech recognition with the 1.5 s pause, spoken replies with word highlighting |
+| `PhoneCall.swift` | (iOS only) the live call as a CallKit phone call: lock screen, End, Mute, hold |
 | `GeminiLive.swift` | the live voice call: Live API WebSocket, model lookup, 16 kHz mic with the speech gate, gap-free playback, resumption handles |
 | `TalkloopEngine.swift` | `startConversation`, `sendTurn`, `chatTurn`, drill, hands-free mic, pause, `endCall`, recap |
 | `Views/` | login, key screen, setup, call, mistakes |
@@ -111,6 +112,10 @@ Gemini Live key). As on the web:
 - Typed messages go to Gemini as text. Free chats name their subjects every 6 turns.
 - The phone's echo cancellation (voice processing) keeps Gemini from hearing itself, and
   the call keeps going with the screen locked (background audio).
+- It shows as a phone call, like a WhatsApp call (CallKit, `PhoneCall.swift`): on the lock
+  screen the iOS call screen shows the partner and the call time with **End** and **Mute**;
+  unlocked, the green pill or the Dynamic Island leads back to the app. A real phone call
+  coming in puts it on hold; tap ▶ to carry on. These calls stay out of the Phone app's Recents.
 
 ## Not ported yet
 

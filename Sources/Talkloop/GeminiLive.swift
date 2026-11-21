@@ -429,6 +429,13 @@ final class LiveCall {
         }
     }
 
+    /// The audio session is active again (CallKit gave it back after a hold): restart the audio
+    /// if iOS stopped it meanwhile.
+    func audioResumed() {
+        guard playFormat != nil, !engine.isRunning else { return }
+        restartAudio("audio session active again")
+    }
+
     func stopVoice() {
         generation += 1
         pending = 0

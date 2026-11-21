@@ -166,6 +166,8 @@ final class TalkloopEngine: ObservableObject {
 
     private let listener = Listener()
     private let speaker = Speaker()
+    // A live call shows as a phone call on the lock screen (CallKit), with End and Mute.
+    private let phone = PhoneCall()
 
     init(sessionToken: @escaping () -> String?, onRenewedToken: @escaping (String) -> Void, onLoggedOut: @escaping () -> Void) {
         self.sessionToken = sessionToken
@@ -184,6 +186,13 @@ final class TalkloopEngine: ObservableObject {
             self.handsFree = false
             self.status = message
         }
+        phone.onEnd = { [weak self] in
+            guard let self, self.settings != nil else { return }
+            self.endCall()
+        }
+        phone.onMute = { [weak self] on in self?.setLiveMuted(on) }
+        phone.onHold = { [weak self] on in self?.setPaused(on) }
+        phone.onAudioActive = { [weak self] in self?.live?.audioResumed() }
     }
 
     // MARK: - Starting up
@@ -470,6 +479,7 @@ final class TalkloopEngine: ObservableObject {
             liveRetries = 0
             liveLearnerTurns = 0
             liveLastReply = ""
+            phone.start(partner: s.characterName)
             await startLive()
         } else {
             await sendTurn("")
@@ -956,6 +966,8 @@ final class TalkloopEngine: ObservableObject {
             return
         }
         guard live == nil, settings != nil else { return } // started or ended while permission was asked
+        await phone.waitForAudio() // CallKit activates the audio session for the call first
+        guard live == nil, settings != nil else { return }
         // Gemini's own copy of the call, if it still has it; else the partner gets the end of the call.
         let handle: String? = transcript.isEmpty ? nil : LiveCall.savedHandle
         let recap: [String] = handle != nil ? [] : transcript.suffix(Self.liveRecapLines).map { m -> String in
@@ -970,6 +982,7 @@ final class TalkloopEngine: ObservableObject {
                 guard let self, let call, self.live === call else { return }
                 self.liveRetries = 0
                 self.status = ""
+                self.phone.reportConnected()
                 // The partner speaks first; resumed, it carries on where the call was.
                 call.open(with: handle != nil
                     ? "(The call was on hold or the line dropped, and it is back now: carry on from where we were in one short line, without greeting again.)"
@@ -1008,6 +1021,7 @@ final class TalkloopEngine: ObservableObject {
     private func setLiveMuted(_ muted: Bool) {
         guard let live else { return }
         live.muted = muted
+        phone.setMuted(muted)
         micOn = !muted
         status = muted ? "Mic muted: tap 🎤 to talk again." : ""
     }
@@ -1206,6 +1220,7 @@ final class TalkloopEngine: ObservableObject {
     private func setPaused(_ on: Bool) {
         guard on != paused else { return }
         paused = on
+        if !on { phone.resume() } // after iOS put the call on hold, CallKit gives the audio back
         // A live call stays connected while paused: the mic sends nothing and the voice stops.
         if let live {
             live.muted = on
@@ -1239,6 +1254,7 @@ final class TalkloopEngine: ObservableObject {
 
     func endCall() {
         noteLiveSubjects() // what a live free chat was about, for the next calls
+        phone.end()
         stopLive()
         LiveCall.clearHandle()
         liveReconnectPending = false
